@@ -114,19 +114,20 @@ The reset pin for the MFRC522 chip is not part of the SPI bus, but is necessay t
 #define LED_COUNT       4
 ```
 
+The MFRC522 chips are all instantiated here into an array, but not yet with the reset and SS pins as arguments, as we'll do that later at setup. The instances consists of multiple datafields that are updated whenever the chip is read. Since it is created here at the global workspace, it will be accessible anywhere in this program. The SS pins is placed into an array as it lets us loop over them in the same way as the MFRC522 instances.
 
 ```
 byte ssPins[] = {SS_4_PIN, SS_3_PIN, SS_2_PIN, SS_1_PIN};           // Array of Slave Select pins for later use in cycling through with for loop
 MFRC522 mfrc522[NR_OF_READERS];                                     // Create a MFRC522 instance for each of the readers we have
 ```
 
-
+We're using the neopixel library to instantiate our led-string object. The arguments are directly copied from the examples given in the library
 
 ```
 Adafruit_NeoPixel strip(LED_COUNT, LED_PIN, NEO_GRB + NEO_KHZ800);  // Instatiate the strip of WS2812B LEDs we are hooking up
 ```
 
-
+We're also pre-defining the ID's of the tags we want to read as global values, so that they can be used whenever and wherever we need them. As the ID's consist of 4x bytes, we need to define a byte array to hold them. And since we have multiple, we have created a 2D array such that it is easier to loop over them. This helps us as we also create an arry of colors where the index of the ID tag corresponds to the color we want to show to indicate postive ID
 
 ```
 byte allowedID[3][4] =                                              // The limited set of recognized unique IDs of the tags I'm using
@@ -141,6 +142,96 @@ uint32_t color_matching[3] =                                      // Colors matc
     strip.Color(  0,   255, 0), // Green
     strip.Color(  255,   0, 0), // Red
   };
+```
+
+Although quite a bit is happening in the setup section, most of it is fairly straightforward, and we will tackle it in three chunks. The Serial.begin line starts serial communication with the ESP32 at a predefined datarate of 9600 baud. The need for setting a specific datarate is because UART does not provide it's own separate clock signal, meaning both ends of the communication need to agree on the clock rate beforhand. The while(!serial) sets the program to wait at this point until a serial terminal is opened. (So, beware, if you don't open the serial terminal, you won't be able to start reading the tags and seeing the LEDs respond. If you want this program to run from a battery or other power supply, and not be connected to a PC, you should remove the Serial parts of the program, as you will never be able to open a terminal and never proceed with the program). SPI.begin just starts up the SPI bus so that we can begin sending/receiving data over it.
+
+```
+void setup() {
+  Serial.begin(9600);           // Initialize serial communications with the PC
+  while (!Serial);              // Do nothing if no serial port is opened 
+  SPI.begin();                  // Initialize the SPI bus
+```
+
+Next we tell the ESP32 to initialize the led-strip instance we previously created, and to turn off the LEDs in its neopixel array. Then we pre-define the brightness of all the pixels in the array so that later changes to the colors will all be at 20% of maximum brightness. This helps with not using more power than the ESP32 can source. (there's three colors in one pixel, red green and blue, and each color can draw 20 mA at maximum brightness, meaning each pixel can potentially sink 60mA. Only 4x pixels can then worst case sink 240mA!)
+
+```
+  strip.begin();                // INITIALIZE NeoPixel strip object (REQUIRED)
+  strip.clear();                // Turn OFF all pixels ASAP
+  strip.setBrightness(50);      // Set BRIGHTNESS to about 1/5 (max = 255)
+```
+
+As we discussed in the sections above, the mfrc522 instance is globally available, so we can call it here, and it has a set of functions and datafields that comes with it. Here we loop over the initializer function that starts up the specific instances of the mfrc522. Notice we use the indexed SS array together with the common reset pin as arguments, which tells the function to instantiate it with SPI interface (a different set of arguments would have told the function to use the I2C or UART interface instead). It's important to have begun the SPI bus before we initialize a mfrc522 instance. The delay that follows is to give the chip enough time to run all it's internal start up and set up and configuration routines before we start asking it to do stuff (before this, the only thing we could tell it was to start up, or initialize). We proceed with a call to the mfrc522 to tell us which firmware version it has loaded onto it. If the output we receive isn't garbage, we know we have started up the MFRC522 chips correctly. The PCD and PICC names are the industry names for reader and tag. PCD = Proximity Coupling Device. PICC = Proximity Inductive Coupling Card. Note that the terms PICC and PCD most often are used for NFC systems that reads tags based on the ISO14443 standard, and other names might be used in other circumstances.
+
+```
+for (uint8_t reader = 0; reader < NR_OF_READERS; reader++) {    // looking for MFRC522 readers
+    mfrc522[reader].PCD_Init(ssPins[reader], RST_PIN);
+    Serial.print(F("Reader "));
+    Serial.print(reader);
+    Serial.print(F(": "));
+    mfrc522[reader].PCD_DumpVersionToSerial();
+    delay(500);
+```
+
+The main superloop starts bu setting up a loop that cycles through each mfrc522 instance. It contiunes by checking a couple of things for the currently selected mfrc522 instance. First it just continoues with the next mfrc522 instance in the loop if there is no tags present on the current reader. Second, if there was a tag present, it tries to read in the data from the tag. If the data couldn't be read, it just continoues with the next mfrc522 instance in the loop. If data could be read, it continues down to printing the Unique ID of the tag to the serial monitor. It uses a helper function to print the UID, dump_byte_array, this function is explained in the last part of this section. The next two lines uses a custom lookup function to return a color, white if the tag is not recognized, a custom color based on our loopup table if a recognized tag was found, and updates the color of the LED nieghboring the current reader. The custom lookup function is also explained later in the last part of this section. Finally we reset the reader to avoid issues with it stalling or hanging. 
+
+```
+void loop() {
+
+  for (uint8_t reader = 0; reader < NR_OF_READERS; reader++) {              // CYCLING THROUGH EACH READER TO CHECK IF ANY NEW TAGS ARE PRESENT
+
+    if (mfrc522[reader].PICC_IsNewCardPresent() && mfrc522[reader].PICC_ReadCardSerial()) {
+
+      Serial.println();
+      Serial.print(F("Reader "));
+      Serial.print(reader);
+  
+      Serial.print(F(": Card UID:"));                                         // Show some details of the PICC (that is: the tag/card)
+      dump_byte_array(mfrc522[reader].uid.uidByte, mfrc522[reader].uid.size);
+      Serial.println();
+  
+      strip.setPixelColor(reader, checkTagUID(mfrc522[reader].uid.uidByte));  // Update the color of the LED next to the current reader according to the tag present
+      strip.show();
+  
+      mfrc522[reader].PICC_HaltA();                                           // Halt PICC
+      mfrc522[reader].PCD_StopCrypto1();                                      // Stop encryption on PCD
+  
+      mfrc522[reader].PCD_Reset();                                            // Test soft reset
+      mfrc522[reader].PCD_Init(ssPins[reader], RST_PIN);
+    
+      strip.clear();                                                          // Set all pixel colors to 'off'
+      strip.show();   
+    }
+  }
+}
+```
+
+That's almost it, only the helper functions are left. What this one basically does up in the main loop is taking the MFRC522 UID buffer as the first argument, as it contains the byte values of the UID. And then it takes the length of the UID buffer as the second argument (which is in this case 4, as the ID's for the tags are 4 bytes long). Then it steps through each byte and prints out each byte as text on the serial monitor.
+
+```
+void dump_byte_array(byte * buffer, byte bufferSize) {
+  for (byte i = 0; i < bufferSize; i++) {
+    Serial.print(buffer[i] < 0x10 ? " 0" : " ");
+    Serial.print(buffer[i], HEX);
+  }
+}
+```
+
+The last helper function starts by setting white as the default color to return in case no ID match was found. I then uses the UID buffer of a mfrc522 instance that was given as an argument in the function, and compares it with each of the three IDs in the allowedID array using the memcmp function. The memcmp function is a standard C language function which reinterprets the objects pointed to by the first and second argument as arrays of unsigned char, and compares the first specified bytes (in the code below, we have 4 bytes) of these arrays. The function returns an integer, 0, if all bytes are equal. The index of the ID that was recognized is re-used to select a matching color from the color_matching array, and we then stop the for loop. 
+
+```
+uint32_t checkTagUID(byte * buffer){
+  uint32_t color = strip.Color(  0,   0,   0, 255);         // std color, true white, as deffault return value
+  for (int i = 0; i < 3; i++) {
+    if (memcmp(buffer, allowedID[i], 4) == 0){
+        color = color_matching[i];
+        break;    
+    }else{
+      Serial.println("No Match");
+    }
+  }
+  return color;
+}
 ```
 
 [Back to Table of Contents](#Table-of-Contents)  
