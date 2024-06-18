@@ -6,7 +6,7 @@ NFC reading from 4x MFRC522 Modules on the same SPI bus from an ESP32
 
 - A general description of the project:
   - _An ESP32 that multiplexes 4x of my custom desighned MFRC522 NFC modules, and uses RGB LEDs to indicate status_
-  - _See my other repo, [Custom MFRC522 Board Design](https://github.com/palcan/Custom-MFRC522-Board-Design), for details on the custom desighned MFRC522 NFC module_
+  - _See my other repo, [Custom MFRC522 Board Design](https://github.com/palcan/Custom-MFRC522-Board-Design), for details on the custom designed MFRC522 NFC module_
 
 - The project status:
   - _The project is finished, and intended to be reused, in some form, in a new project for multiplexing the frontend of one of the modules to 8x antennas. This project that can be found in a new repo some time in the future. The code in this repo will not be further updated._
